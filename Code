@@ -1,0 +1,178 @@
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define TRIG_PIN 8
+#define ECHO_PIN 9
+
+const unsigned long PADDLE_UPDATE_INTERVAL = 33;
+const unsigned long BALL_UPDATE_INTERVAL = 16;
+const uint8_t PADDLE_HEIGHT = 24;
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+#define OLED_RESET 4
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+void drawGameCourt();
+void flashDisplay();
+void resetBallPosition();
+long getUltrasonicDistance();
+
+uint8_t ballPosX = 64, ballPosY = 32;
+uint8_t ballDirX = 1, ballDirY = 1;
+unsigned long nextBallUpdate;
+
+unsigned long nextPaddleUpdate;
+const uint8_t CPU_PADDLE_X = 12;
+uint8_t cpuPaddleY = 16;
+
+const uint8_t PLAYER_PADDLE_X = 115;
+uint8_t playerPaddleY = 16;
+
+void setup() {
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+    display.display();
+    unsigned long start = millis();
+
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+
+    display.clearDisplay();
+    drawGameCourt();
+
+    while(millis() - start < 2000);
+
+    display.display();
+    nextBallUpdate = millis();
+    nextPaddleUpdate = nextBallUpdate;
+
+    Serial.begin(9600);
+}
+
+void loop() {
+    bool needsUpdate = false;
+    unsigned long currentTime = millis();
+
+    if(currentTime > nextBallUpdate) {
+        uint8_t newBallPosX = ballPosX + ballDirX;
+        uint8_t newBallPosY = ballPosY + ballDirY;
+
+        // Check if the ball goes behind the CPU paddle
+        if(newBallPosX < CPU_PADDLE_X) {
+            flashDisplay();
+            resetBallPosition();
+            return;
+        }
+
+        // Check if the ball goes behind the Player paddle
+        if(newBallPosX > PLAYER_PADDLE_X) {
+            flashDisplay();
+            resetBallPosition();
+            return;
+        }
+
+        // Ball bouncing off walls
+        if(newBallPosX == 0 || newBallPosX == 127) {
+            ballDirX = -ballDirX;
+            newBallPosX += ballDirX + ballDirX;
+        }
+
+        if(newBallPosY == 0 || newBallPosY == 63) {
+            ballDirY = -ballDirY;
+            newBallPosY += ballDirY + ballDirY;
+        }
+
+        // Ball bouncing off paddles
+        if(newBallPosX == CPU_PADDLE_X && newBallPosY >= cpuPaddleY && newBallPosY <= cpuPaddleY + PADDLE_HEIGHT) {
+            ballDirX = -ballDirX;
+            newBallPosX += ballDirX + ballDirX;
+        }
+
+        if(newBallPosX == PLAYER_PADDLE_X && newBallPosY >= playerPaddleY && newBallPosY <= playerPaddleY + PADDLE_HEIGHT) {
+            ballDirX = -ballDirX;
+            newBallPosX += ballDirX + ballDirX;
+        }
+
+        display.drawPixel(ballPosX, ballPosY, BLACK);
+        display.drawPixel(newBallPosX, newBallPosY, WHITE);
+        ballPosX = newBallPosX;
+        ballPosY = newBallPosY;
+
+        nextBallUpdate += BALL_UPDATE_INTERVAL;
+        needsUpdate = true;
+    }
+
+    if(currentTime > nextPaddleUpdate) {
+        nextPaddleUpdate += PADDLE_UPDATE_INTERVAL;
+
+        // CPU paddle movement
+        display.drawFastVLine(CPU_PADDLE_X, cpuPaddleY, PADDLE_HEIGHT, BLACK);
+        const uint8_t halfPaddleHeight = PADDLE_HEIGHT >> 1;
+        if(cpuPaddleY + halfPaddleHeight > ballPosY) {
+            cpuPaddleY -= 1;
+        }
+        if(cpuPaddleY + halfPaddleHeight < ballPosY) {
+            cpuPaddleY += 1;
+        }
+        if(cpuPaddleY < 1) cpuPaddleY = 1;
+        if(cpuPaddleY + PADDLE_HEIGHT > 63) cpuPaddleY = 63 - PADDLE_HEIGHT;
+        display.drawFastVLine(CPU_PADDLE_X, cpuPaddleY, PADDLE_HEIGHT, WHITE);
+
+        // Player paddle controlled by ultrasonic sensor
+        display.drawFastVLine(PLAYER_PADDLE_X, playerPaddleY, PADDLE_HEIGHT, BLACK);
+        long distance = getUltrasonicDistance();
+       
+        if(distance > 0 && distance <= 50) {  // Move paddle based on distance
+            playerPaddleY = map(distance, 0, 50, 1, 63 - PADDLE_HEIGHT);
+        }
+
+        if(playerPaddleY < 1) playerPaddleY = 1;
+        if(playerPaddleY + PADDLE_HEIGHT > 63) playerPaddleY = 63 - PADDLE_HEIGHT;
+        display.drawFastVLine(PLAYER_PADDLE_X, playerPaddleY, PADDLE_HEIGHT, WHITE);
+
+        needsUpdate = true;
+
+        Serial.println(distance);
+    }
+
+    if(needsUpdate)
+        display.display();
+}
+
+// Measure distance with ultrasonic sensor
+long getUltrasonicDistance() {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+    long duration = pulseIn(ECHO_PIN, HIGH);
+    return duration * 0.034 / 2;  // Convert to centimeters
+}
+
+// Draw the game court
+void drawGameCourt() {
+    display.drawRect(0, 0, 128, 64, WHITE);
+}
+
+// Flash the screen for 500 milliseconds
+void flashDisplay() {
+    display.invertDisplay(true);  // Invert colors (flash effect)
+    display.display();
+    delay(500);
+    display.invertDisplay(false);  // Return to normal
+    display.display();
+}
+
+// Reset the ball to the center after flashing
+void resetBallPosition() {
+    ballPosX = 64;
+    ballPosY = 32;
+    ballDirX = random(0, 2) == 0 ? 1 : -1;
+    ballDirY = random(0, 2) == 0 ? 1 : -1;
+    display.clearDisplay();
+    drawGameCourt();
+    display.display();
+}
